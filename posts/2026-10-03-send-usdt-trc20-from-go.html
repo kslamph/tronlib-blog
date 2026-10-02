@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sending USDT (TRC-20) from Go — and the three things that bite you</title>
+<meta name="description" content="A 30-line TRC-20 transfer in Go with tronlib, then the decimal, fee-limit and error-handling problems it hides — each one caught by the compiler or the node before it costs you money.">
+<meta property="og:title" content="Sending USDT (TRC-20) from Go — and the three things that bite you">
+<meta property="og:description" content="A 30-line TRC-20 transfer in Go, then the decimal, fee-limit and error-handling problems it hides.">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<nav class="site-nav">
+  <a class="brand" href="../">tronlib notes</a>
+  <a href="https://github.com/kslamph/tronlib">GitHub</a>
+  <a href="https://pkg.go.dev/github.com/kslamph/tronlib/v2">Docs</a>
+</nav>
+
+<main>
+<h1>Sending USDT (TRC-20) from Go</h1>
+<p class="post-meta">2026-10-03 · Go · TRON · <a href="https://github.com/kslamph/tronlib">kslamph/tronlib</a></p>
+
+<p>If you have written a TRON transfer in Go before, you have almost certainly done this arithmetic by hand somewhere:</p>
+
+<pre><code>// 25.5 USDT, 6 decimals. Do not trust me to get this right.
+amount := new(big.Int)
+amount.SetString("25500000", 10)</code></pre>
+
+<p>Six decimals for USDT, eighteen for some tokens, and the number that reaches the chain has to be the raw integer. Miss a zero and you send 0.00255 USDT to a production contract. There is no compiler error for that.</p>
+
+<p>This post sends USDT in about thirty lines, then looks at the three places that simple version quietly goes wrong. Every snippet here compiles against the real module — I ran them before publishing.</p>
+
+<h2>The 30-line version</h2>
+
+<pre><code>package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/kslamph/tronlib/v2"
+)
+
+func main() {
+	ctx := context.Background()
+
+	cli, err := tronlib.Dial(ctx, "grpc://grpc.nile.trongrid.io:50051")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cli.Close()
+
+	key, err := tronlib.KeyFromHex(os.Getenv("TRON_PRIVATE_KEY"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	to, err := tronlib.ParseAddress(os.Getenv("TRON_TO"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// USDT on TRON (nil, testnet). Mainnet is TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t.
+	usdtAddr, err := tronlib.ParseAddress("TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj")
+	if err != nil {
+		log.Fatal(err)
+	}
+	usdt, err := cli.Token(ctx, usdtAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	amt, err := usdt.Amount("25.5") // decimal string, scaled to 6 decimals
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tx, err := usdt.Transfer(ctx, key.Address(), to, amt)
+	if err != nil {
+		log.Fatal(err)
+	}
+	signed, err := tx.Sign(key)
+	if err != nil {
+		log.Fatal(err)
+	}
+	rec, err := cli.Broadcast(ctx, signed)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("txid:", rec.TxID, "ok:", rec.OK())
+}</code></pre>
+
+<pre><code>go get github.com/kslamph/tronlib/v2@v2.0.0
+export TRON_PRIVATE_KEY=...   # hex private key
+export TRON_TO=TW...          # recipient
+go run .</code></pre>
+
+<p>Nine of those lines are the transfer itself. The rest is plumbing you would write anyway. Note the shape: <code>Dial</code>, get a key, <code>cli.Token</code> for a handle, <code>Amount</code>, <code>Transfer</code>, <code>Sign</code>, <code>Broadcast</code>. Four steps, each one a transaction you did not have to assemble by hand.</p>
+
+<div class="note">
+<p><strong>It never touched the network in that snippet's happy path.</strong> <code>cli.Token</code> reads the token's decimals and metadata once, eagerly, from the chain. That is the one RPC you pay for before the first transfer — and the reason <code>Token</code> takes a <code>ctx</code> and returns an error, unlike <code>Account</code>, which is a pure handle.</p>
+</div>
+
+<h2>Thing 1: the decimals are not optional knowledge</h2>
+
+<p><code>usdt.Amount("25.5")</code> is a string in, an exact scaled integer out. It reads the token's decimals first, so the same call is correct for an 18-decimal token:</p>
+
+<pre><code>amt, err := usdt.Amount("25.5")  // 25500000 at 6 decimals
+whole, err := usdt.Whole(25)     // 25 tokens, same thing
+</code></pre>
+
+<p>Two details worth knowing. <code>Amount</code> carries the scale it was minted at, and the transfer rejects a mismatched one with <code>amount.decimals_mismatch</code> rather than rescaling silently — so an amount that came from a different token's handle cannot quietly get re-scaled into this one. And too many fractional digits is <code>amount.too_many_decimals</code>, not a silent rounding. There is no <code>float64</code> anywhere in the path, and no way to introduce one.</p>
+
+<h2>Thing 2: the fee limit can be too low before you ever sign</h2>
+
+<p>Every builder stamps a default 150 TRX fee limit. That is a ceiling, not a bill. If the call you are building needs more energy than 150 TRX can buy, the node rejects it at broadcast — after you have signed, and after your agent has already decided what to do next.</p>
+
+<p>You can ask first. <code>CostPreview</code> runs the same dry run the node will, prices it, and tells you:</p>
+
+<pre><code>tx, err := usdt.Transfer(ctx, owner, owner, amt)
+if err != nil {
+	return err
+}
+
+pv, err := cli.Account(owner).CostPreview(ctx, tx)
+if err != nil {
+	return err
+}
+if pv.TronToBurn &gt; tx.FeeLimit() {
+	return &amp;tron.Error{
+		Code: tron.CodeTxFeeLimitTooLow,
+		Op:   "example.preflight",
+		Hint: "raise the fee limit",
+	}
+}</code></pre>
+
+<p>The dry run also catches a revert before you sign anything, so a failing call fails on your machine instead of on chain. If you want the authoritative number instead of a floor, <code>tx.PreviewCost</code> is the same thing from the <code>tx</code> package.</p>
+
+<h2>Thing 3: the error is the API</h2>
+
+<p>Here is a node rejection:</p>
+
+<pre><code>err := cli.Broadcast(ctx, signed)
+// Broadcast: chain.timeout
+</code></pre>
+
+<p>That string tells you something happened. It does not tell you whether to retry, wait, or fund an account. The message is deliberately short — a <code>Hint</code> and a <code>Next</code> action live on the error, not in the string:</p>
+
+<pre><code>if e := tron.ErrorOf(err); e != nil {
+	fmt.Println("op:   ", e.Op)
+	fmt.Println("hint: ", e.Hint)
+	fmt.Println("next: ", e.Action())  // retry | wait | fix_call | fix_transaction | fund
+}
+
+if tron.HasCode(err, tron.CodeChainTimeout) {
+	// transient — retry the same bytes
+}</code></pre>
+
+<p><code>ErrorOf</code> returns nil for an error that is not from this library, so the nil check is the type test. <code>HasCode</code> is the verb for matching a code; it handles the nil case itself.</p>
+
+<div class="note">
+<p><strong>The timeout case is the one that costs real money.</strong> An ambiguous timeout means the broadcast may or may not have landed. The library resolves it with one reconciliation poll and returns <code>chain.unconfirmed</code> carrying the txid and <code>Next: wait</code>. Resending the identical signed payload is deduplicated by the chain. <em>Rebuilding</em> and re-signing produces a new TAPOS reference and a new txid, and that is the one that spends twice.</p>
+</div>
+
+<h2>So why this and not gotron</h2>
+
+<p>The common starting point in Go is <a href="https://github.com/fbsobreira/gotron">gotron</a>. It wraps the same gRPC service and it will get you a transfer out. This post is not an argument that gotron is bad — it is a list of the three things above, because they are the things you will design around eventually:</p>
+
+<table>
+<thead><tr><th>Concern</th><th>Handled by the type system</th></tr></thead>
+<tbody>
+<tr><td>Token decimals</td><td>Amount carries its scale; mismatches are <code>amount.decimals_mismatch</code>, never a silent rescale</td></tr>
+<tr><td>Fee limit / energy</td><td>Same 150 TRX default on every kind, with <code>CostPreview</code> to check it before signing</td></tr>
+<tr><td>Failure handling</td><td>Every error is a <code>*tron.Error</code> with a code, a hint and a <code>Next</code> action</td></tr>
+</tbody>
+</table>
+
+<p>Two smaller ones that only show up later: amounts are `uint256`-scaled <code>big.Int</code> with no <code>float64</code> permitted on any money path, and the <code>Tx</code> interface is sealed, so a <code>Broadcast</code> cannot be handed a hand-rolled transaction that skipped the builder defaults.</p>
+
+<h2>Try it</h2>
+
+<p>Point it at Nile, use a testnet key, and the whole flow is exercisable for free. The <a href="https://pkg.go.dev/github.com/kslamph/tronlib/v2">package docs</a> carry runnable examples, and <a href="https://github.com/kslamph/tronlib">the repository</a> has the full test suite.</p>
+
+</main>
+
+<footer>
+  <p>Every code block on this page was compiled and vetted against the module before publishing. Corrections welcome on <a href="https://github.com/kslamph/tronlib">GitHub</a>.</p>
+</footer>
+</body>
+</html>

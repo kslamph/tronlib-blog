@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tronlib notes — TRON development in Go</title>
+<meta name="description" content="Practical notes on building on TRON in Go with tronlib: TRC-20 transfers, energy and fee limits, machine-readable errors, offline signing.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="site-nav">
+  <a class="brand" href="./">tronlib notes</a>
+  <a href="https://github.com/kslamph/tronlib">GitHub</a>
+  <a href="https://pkg.go.dev/github.com/kslamph/tronlib/v2">Docs</a>
+</nav>
+
+<main>
+<h1>TRON development in Go</h1>
+<p class="post-meta">Notes on <a href="https://github.com/kslamph/tronlib">kslamph/tronlib</a> — a TRON SDK for Go.</p>
+
+<p>Short, practical posts about the things that actually cost you time: decimal scaling, energy and fee limits, and reading an error the node gave you back.</p>
+
+<h2>Posts</h2>
+
+<ul>
+  <li>
+    <a href="posts/2026-10-03-send-usdt-trc20-from-go.html">Sending USDT (TRC-20) from Go</a><br>
+    <span style="color:var(--ink-faint);font-size:0.9rem">A 30-line transfer, then the decimal, fee-limit and error-handling problems it hides. 2026-10-03</span>
+  </li>
+</ul>
+
+<h2>Start here</h2>
+
+<pre><code>go get github.com/kslamph/tronlib/v2@v2.0.0</code></pre>
+
+<p>Full documentation is on <a href="https://pkg.go.dev/github.com/kslamph/tronlib/v2">pkg.go.dev</a>. Every example there is compiled by the test suite, and the examples in <a href="https://github.com/kslamph/tronlib/blob/v2/docs/examples.md">docs/examples.md</a> are executed against a node.</p>
+
+</main>
+
+<footer>
+  <p>Posts are written against a released version. Code is verified to compile before publication.</p>
+</footer>
+</body>
+</html>
