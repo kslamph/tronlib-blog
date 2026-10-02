@@ -164,20 +164,22 @@ if tron.HasCode(err, tron.CodeChainTimeout) {
 <p><strong>The timeout case is the one that costs real money.</strong> An ambiguous timeout means the broadcast may or may not have landed. The library resolves it with one reconciliation poll and returns <code>chain.unconfirmed</code> carrying the txid and <code>Next: wait</code>. Resending the identical signed payload is deduplicated by the chain. <em>Rebuilding</em> and re-signing produces a new TAPOS reference and a new txid, and that is the one that spends twice.</p>
 </div>
 
-<h2>So why this and not gotron</h2>
+<h2>What the type system carries for you</h2>
 
-<p>The common starting point in Go is <a href="https://github.com/fbsobreira/gotron">gotron</a>. It wraps the same gRPC service and it will get you a transfer out. This post is not an argument that gotron is bad — it is a list of the three things above, because they are the things you will design around eventually:</p>
+<p>Those three concerns are not things you have to remember. Each one is a property of the types, so the mistake does not compile or fails loudly:</p>
 
 <table>
-<thead><tr><th>Concern</th><th>Handled by the type system</th></tr></thead>
+<thead><tr><th>Concern</th><th>What the types do</th></tr></thead>
 <tbody>
-<tr><td>Token decimals</td><td>Amount carries its scale; mismatches are <code>amount.decimals_mismatch</code>, never a silent rescale</td></tr>
-<tr><td>Fee limit / energy</td><td>Same 150 TRX default on every kind, with <code>CostPreview</code> to check it before signing</td></tr>
-<tr><td>Failure handling</td><td>Every error is a <code>*tron.Error</code> with a code, a hint and a <code>Next</code> action</td></tr>
+<tr><td>Token decimals</td><td><code>Amount</code> carries the scale it was minted at; a mismatch is <code>amount.decimals_mismatch</code>, never a silent rescale</td></tr>
+<tr><td>Fee limit / energy</td><td>every kind carries the same 150 TRX default, and <code>CostPreview</code> will tell you before you sign whether the call fits inside it</td></tr>
+<tr><td>Failure handling</td><td>every error is a <code>*tron.Error</code> with a code, a hint and a <code>Next</code> action, so the remedy is data rather than string-matching</td></tr>
 </tbody>
 </table>
 
-<p>Two smaller ones that only show up later: amounts are `uint256`-scaled <code>big.Int</code> with no <code>float64</code> permitted on any money path, and the <code>Tx</code> interface is sealed, so a <code>Broadcast</code> cannot be handed a hand-rolled transaction that skipped the builder defaults.</p>
+<p>Two smaller ones that tend to matter later: amounts are <code>uint256</code>-scaled <code>big.Int</code> with no <code>float64</code> permitted on any money path, and the <code>Tx</code> interface is sealed, so a <code>Broadcast</code> cannot be handed a hand-rolled transaction that skipped the builder defaults.</p>
+
+<p>If you are moving from another TRON library, the practical order is: get the transfer working against <code>Amount</code> and decimal strings first, then add the <code>CostPreview</code> preflight once you are on a contract whose cost you do not control, then switch error handling over to codes. Nothing has to happen at once, and each step stands on its own.</p>
 
 <h2>Try it</h2>
 
